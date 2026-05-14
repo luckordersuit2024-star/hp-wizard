@@ -229,11 +229,14 @@ export function generateHtml(data: WizardData): string {
   const primary = data.primaryColor || "#3b82f6";
   const rgb = hexToRgb(primary.startsWith("#") && primary.length === 7 ? primary : "#3b82f6");
 
+  const serviceName = data.serviceName || "サービス名";
+  const catchphrase = data.catchphrase || "キャッチコピーをここに";
+
   const sections = data.sections
     .map((s) =>
       sectionHtml(s, primary, style)
-        .replace(/__CATCHPHRASE__/g, data.catchphrase || "キャッチコピーをここに")
-        .replace(/__SERVICENAME__/g, data.serviceName || "サービス名")
+        .replace(/__CATCHPHRASE__/g, () => catchphrase)
+        .replace(/__SERVICENAME__/g, () => serviceName)
     )
     .join("\n");
 
@@ -264,8 +267,8 @@ export function generateHtml(data: WizardData): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${data.serviceName || "サービス名"}</title>
-  <meta name="description" content="${data.catchphrase || ""}">
+  <title>${serviceName}</title>
+  <meta name="description" content="${catchphrase}">
   ${googleFonts}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -277,12 +280,12 @@ export function generateHtml(data: WizardData): string {
 </head>
 <body>
   <header style="position:sticky;top:0;z-index:50;background:#fff;border-bottom:1px solid #e5e7eb;padding:.875rem 2rem;display:flex;align-items:center;justify-content:space-between;">
-    <span style="font-weight:700;font-size:1.125rem;color:${primary}">${data.serviceName || "サービス名"}</span>
+    <span style="font-weight:700;font-size:1.125rem;color:${primary}">${serviceName}</span>
     <nav style="display:flex;gap:1.5rem;">${navLinks}</nav>
   </header>
 ${sections}
   <footer style="background:#111827;color:#9ca3af;text-align:center;padding:2rem;font-size:.875rem;">
-    <p>&copy; ${new Date().getFullYear()} ${data.serviceName || "サービス名"}. All rights reserved.</p>
+    <p>&copy; ${new Date().getFullYear()} ${serviceName}. All rights reserved.</p>
   </footer>
 </body>
 </html>`;
