@@ -21,11 +21,82 @@ const STEPS = [
   "雰囲気",
 ] as const;
 
+// /api/analyze のレスポンス型
+interface AnalyzeSection {
+  tag: string;
+  id: string | null;
+  className: string | null;
+  role: string | null;
+  headingText: string | null;
+}
+interface AnalyzeResult {
+  ogp: { title: string | null; description: string | null; siteName: string | null };
+  colors: { primary: string | null; raw: string[] };
+  sections: AnalyzeSection[];
+}
+
+// セクション tag/id/class → ウィザード日本語名マッピング
+const SECTION_PATTERNS: [RegExp, string][] = [
+  [/hero|firstview|fv\b|kv\b|mv\b|mainvisual|top-visual|top-image/i, "ヒーロー"],
+  [/about|company|overview|profile|story/i,                           "会社概要"],
+  [/service(?!s)|menu|lineup/i,                                       "サービス"],
+  [/feature[s]?|strength|point[s]?|reason|merit/i,                   "特徴"],
+  [/work[s]?|portfolio|case[s]?|project[s]?|achievement/i,           "実績"],
+  [/news|information|topics|info\b|announce/i,                        "ニュース"],
+  [/blog|article|post[s]?|column/i,                                   "最新記事"],
+  [/price|pricing|plan[s]?|fee|cost/i,                               "料金プラン"],
+  [/faq|question[s]?|qa\b/i,                                         "FAQ"],
+  [/contact|inquiry|form|access/i,                                    "お問い合わせ"],
+  [/review[s]?|testimonial[s]?|voice[s]?|comment/i,                  "レビュー"],
+  [/product[s]?|item[s]?|shop|store|goods|catalog/i,                 "商品一覧"],
+  [/skill[s]?/i,                                                      "スキル"],
+  [/categor/i,                                                        "カテゴリ"],
+  [/special|pickup|feature-product|campaign/i,                       "特集"],
+];
+
+const SKIP_TAGS = new Set(["header", "nav", "footer", "aside"]);
+
+function mapAnalyzedSections(sections: AnalyzeSection[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+
+  for (const s of sections) {
+    if (SKIP_TAGS.has(s.tag)) continue;
+    const haystack = [s.id, s.className, s.role, s.headingText]
+      .filter(Boolean)
+      .join(" ");
+    for (const [pattern, name] of SECTION_PATTERNS) {
+      if (pattern.test(haystack) && !seen.has(name)) {
+        result.push(name);
+        seen.add(name);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+// 白・透明に近い色をスキップして最良の色を選ぶ
+function pickBestColor(colors: AnalyzeResult["colors"]): string | null {
+  const candidates = [colors.primary, ...colors.raw].filter((c): c is string => !!c);
+  for (const c of candidates) {
+    const hex = c.replace("#", "");
+    if (hex.length !== 6) continue;
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+    if (brightness < 210) return c; // 白・明るすぎる色をスキップ
+  }
+  return null;
+}
+
 export default function Wizard() {
   const [step, setStep] = useState(0);
   const [data, setData] = useState<WizardData>(defaultWizardData);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState("");
+  const [analyzeResult, setAnalyzeResult] = useState<AnalyzeResult | null>(null);
   const [done, setDone] = useState(false);
 
   const update = useCallback(<K extends keyof WizardData>(key: K, value: WizardData[K]) => {
@@ -36,26 +107,46 @@ export default function Wizard() {
     if (!url) return;
     setAnalyzing(true);
     setAnalyzeError("");
+    setAnalyzeResult(null);
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-      const json = await res.json();
+      const json: AnalyzeResult & { error?: string } = await res.json();
+
+      console.log("[analyze] status:", res.status);
+      console.log("[analyze] response:", JSON.stringify(json, null, 2));
+
       if (!res.ok) throw new Error(json.error ?? "取得失敗");
 
-      setData((d) => ({
-        ...d,
-        serviceName: d.serviceName || json.ogp?.siteName || json.ogp?.title || "",
-        catchphrase: d.catchphrase || json.ogp?.description || "",
-        primaryColor:
-          d.primaryColor === defaultWizardData.primaryColor && json.colors?.primary
-            ? json.colors.primary
-            : d.primaryColor,
-      }));
+      const mappedSections = mapAnalyzedSections(json.sections ?? []);
+      const bestColor = pickBestColor(json.colors ?? { primary: null, raw: [] });
+
+      console.log("[analyze] mappedSections:", mappedSections);
+      console.log("[analyze] bestColor:", bestColor);
+
+      setAnalyzeResult(json);
+      setData((d) => {
+        const next = { ...d };
+        // OGP → サービス名・キャッチコピー（未入力時のみ上書き）
+        if (!next.serviceName)
+          next.serviceName = json.ogp?.siteName || json.ogp?.title || "";
+        if (!next.catchphrase)
+          next.catchphrase = json.ogp?.description || "";
+        // カラー（デフォルト値のままなら上書き）
+        if (bestColor && next.primaryColor === defaultWizardData.primaryColor)
+          next.primaryColor = bestColor;
+        // セクション（未選択なら上書き）
+        if (next.sections.length === 0 && mappedSections.length > 0)
+          next.sections = mappedSections;
+        return next;
+      });
     } catch (e) {
-      setAnalyzeError(e instanceof Error ? e.message : "エラーが発生しました");
+      const msg = e instanceof Error ? e.message : "エラーが発生しました";
+      console.error("[analyze] error:", msg);
+      setAnalyzeError(msg);
     } finally {
       setAnalyzing(false);
     }
@@ -155,6 +246,7 @@ export default function Wizard() {
               value={data.referenceUrl}
               analyzing={analyzing}
               error={analyzeError}
+              result={analyzeResult}
               onChange={(v) => update("referenceUrl", v)}
               onAnalyze={() => analyze(data.referenceUrl)}
             />
@@ -256,12 +348,14 @@ function StepReferenceUrl({
   value,
   analyzing,
   error,
+  result,
   onChange,
   onAnalyze,
 }: {
   value: string;
   analyzing: boolean;
   error: string;
+  result: AnalyzeResult | null;
   onChange: (v: string) => void;
   onAnalyze: () => void;
 }) {
@@ -276,6 +370,7 @@ function StepReferenceUrl({
           type="url"
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onAnalyze()}
           placeholder="https://example.com"
           className="flex-1 px-3 py-2.5 rounded-lg border border-zinc-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         />
@@ -287,11 +382,47 @@ function StepReferenceUrl({
           {analyzing ? "取得中…" : "解析"}
         </button>
       </div>
-      {error && (
-        <p className="mt-2 text-xs text-red-500">{error}</p>
+
+      {analyzing && (
+        <p className="mt-3 text-xs text-zinc-400">サイトを解析しています…</p>
       )}
-      {!error && analyzing && (
-        <p className="mt-2 text-xs text-zinc-400">サイトを解析しています…</p>
+      {error && (
+        <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-100">
+          <p className="text-xs text-red-600 font-medium">エラー</p>
+          <p className="text-xs text-red-500 mt-0.5">{error}</p>
+        </div>
+      )}
+      {!analyzing && !error && result && (
+        <div className="mt-3 p-3 rounded-lg bg-green-50 border border-green-100 space-y-1.5">
+          <p className="text-xs font-semibold text-green-700">✓ 解析完了 — ウィザードに自動入力しました</p>
+          {result.ogp.title && (
+            <p className="text-xs text-zinc-600">
+              <span className="font-medium text-zinc-500">タイトル：</span>{result.ogp.title}
+            </p>
+          )}
+          {result.ogp.description && (
+            <p className="text-xs text-zinc-600">
+              <span className="font-medium text-zinc-500">説明：</span>
+              {result.ogp.description.slice(0, 60)}{result.ogp.description.length > 60 ? "…" : ""}
+            </p>
+          )}
+          {result.colors.primary && (
+            <p className="text-xs text-zinc-600 flex items-center gap-1.5">
+              <span className="font-medium text-zinc-500">カラー：</span>
+              <span
+                className="inline-block w-3.5 h-3.5 rounded-full border border-black/10"
+                style={{ background: result.colors.primary }}
+              />
+              {result.colors.primary}
+            </p>
+          )}
+          {result.sections.length > 0 && (
+            <p className="text-xs text-zinc-600">
+              <span className="font-medium text-zinc-500">セクション検出：</span>
+              {result.sections.map((s) => s.id || s.tag).slice(0, 6).join(", ")}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
